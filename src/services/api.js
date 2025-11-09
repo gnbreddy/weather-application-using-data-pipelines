@@ -164,6 +164,7 @@ const geocodeCity = async (cityName) => {
 
     // Fallback to predefined coordinates if geocoding fails
     const cityCoordinates = {
+      "Amaravati, Andhra Pradesh": { lat: 16.5062, lon: 80.6480 },
       "amaravati,522237": { lat: 16.5062, lon: 80.6480 },
       "Amaravati": { lat: 16.5062, lon: 80.6480 },
       "San Francisco": { lat: 37.7749, lon: -122.4194 },
@@ -178,7 +179,7 @@ const geocodeCity = async (cityName) => {
       Miami: { lat: 25.7617, lon: -80.1918 },
     };
 
-    return cityCoordinates[cityName] || cityCoordinates["amaravati,522237"];
+    return cityCoordinates[cityName] || cityCoordinates["Amaravati, Andhra Pradesh"];
   } catch (error) {
     console.warn(
       "Geocoding failed, using fallback coordinates:",
@@ -781,3 +782,6 @@ export const handleAPIError = (error) => {
 };
 
 export default api;
+
+// Export Gemini AI service
+export { default as geminiService } from './gemini';

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   Cloud, 
   Thermometer, 
@@ -19,18 +19,22 @@ import MetricCard from '../components/MetricCard';
 import StatusIndicator from '../components/StatusIndicator';
 
 import LocationPermission from '../components/LocationPermission';
+import AIWeatherAssistant from '../components/AIWeatherAssistant';
 import { weatherAPI } from '../services/api';
-import { getUserLocation } from '../services/geolocation';
+import geminiService from '../services/gemini';
 
 const Dashboard = () => {
   const [realTimeWeather, setRealTimeWeather] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [locationLoading, setLocationLoading] = useState(false);
   const [locationDenied, setLocationDenied] = useState(false);
+  const [quickActionLoading, setQuickActionLoading] = useState(null);
+  const [weatherReport, setWeatherReport] = useState(null);
+  const [mlPrediction, setMlPrediction] = useState(null);
 
   // Fetch real-time weather data
   useEffect(() => {
-    const fetchWeatherData = async (location = 'amaravati,522237') => {
+    const fetchWeatherData = async (location = '16.5062,80.6480') => {
       try {
         const data = await weatherAPI.getRealTimeWeather(location);
         setRealTimeWeather(data);
@@ -40,36 +44,78 @@ const Dashboard = () => {
       }
     };
 
-    // Force use Amaravati as the default location (override user location)
+    // Try to get user's actual location, fallback to Amaravati
     const initializeWeather = async () => {
-      console.log('🏙️ Using fixed location: Amaravati');
-      
-      // Set a mock user location for Amaravati
-      setUserLocation({
-        city: 'Amaravati',
-        state: 'Andhra Pradesh',
-        country: 'India',
-        coordinates: {
-          lat: '16.5062',
-          lon: '80.6480'
-        },
-        source: 'fixed'
-      });
-      
-      // Always fetch weather for Amaravati
-      fetchWeatherData('amaravati,522237');
+      // Check if geolocation is supported
+      if (!navigator.geolocation) {
+        console.log('🏙️ Geolocation not supported, using default location: Amaravati');
+        setUserLocation({
+          city: 'Amaravati',
+          state: 'Andhra Pradesh',
+          country: 'India',
+          coordinates: { lat: '16.5062', lon: '80.6480' },
+          source: 'default'
+        });
+        fetchWeatherData('16.5062,80.6480');
+        return;
+      }
+
+      // Try to get user's location
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            timeout: 10000,
+            enableHighAccuracy: true
+          });
+        });
+
+        const { latitude, longitude } = position.coords;
+        console.log('📍 User location detected:', latitude, longitude);
+        
+        // Fetch weather for user's actual location
+        const locationString = `${latitude},${longitude}`;
+        const weatherData = await weatherAPI.getRealTimeWeather(locationString);
+        
+        setUserLocation({
+          city: weatherData.location.name,
+          state: weatherData.location.region,
+          country: weatherData.location.country,
+          coordinates: { lat: latitude.toString(), lon: longitude.toString() },
+          source: 'gps'
+        });
+        
+        setRealTimeWeather(weatherData);
+        toast.success(`Location detected! Showing weather for ${weatherData.location.name}`, { duration: 3000 });
+        
+      } catch (error) {
+        console.log('🏙️ Could not get user location, using default: Amaravati');
+        console.error('Geolocation error:', error);
+        
+        setUserLocation({
+          city: 'Amaravati',
+          state: 'Andhra Pradesh',
+          country: 'India',
+          coordinates: { lat: '16.5062', lon: '80.6480' },
+          source: 'default'
+        });
+        
+        fetchWeatherData('16.5062,80.6480');
+      }
     };
 
     initializeWeather();
     
-    // Refresh every 5 minutes - always use Amaravati
+    // Refresh every 5 minutes using the current location
     const interval = setInterval(() => {
-      console.log('🔄 Refreshing weather data for Amaravati');
-      fetchWeatherData('amaravati,522237');
+      if (userLocation && userLocation.coordinates) {
+        const locationString = `${userLocation.coordinates.lat},${userLocation.coordinates.lon}`;
+        console.log('🔄 Refreshing weather data for', userLocation.city);
+        fetchWeatherData(locationString);
+      }
     }, 5 * 60 * 1000);
     
     return () => clearInterval(interval);
-  }, []); // Remove userLocation dependency to prevent infinite loop
+  }, []);
 
   // Check permission status before requesting
   const checkLocationPermission = async () => {
@@ -261,6 +307,96 @@ const Dashboard = () => {
     { time: '20:00', temperature: 22, humidity: 65, precipitation: 0.1 }
   ];
 
+  // Quick Action Handlers
+  const handleGenerateWeatherReport = async () => {
+    if (!realTimeWeather) {
+      toast.error('Please wait for weather data to load');
+      return;
+    }
+
+    setQuickActionLoading('report');
+    toast.loading('Generating comprehensive weather report...', { id: 'weather-report' });
+
+    try {
+      const result = await geminiService.generateWeatherAnalysis({
+        location: realTimeWeather.location.name,
+        temperature: realTimeWeather.current.temp_c,
+        humidity: realTimeWeather.current.humidity,
+        windSpeed: realTimeWeather.current.wind_kph,
+        conditions: realTimeWeather.current.condition.text
+      });
+
+      if (result.success) {
+        setWeatherReport(result.analysis);
+        toast.success('Weather report generated!', { id: 'weather-report' });
+      } else {
+        // Use fallback analysis if available
+        if (result.fallback) {
+          setWeatherReport(result.fallback);
+          toast.success('Weather report generated (basic mode)', { id: 'weather-report', duration: 4000 });
+        } else {
+          const errorMsg = result.error || 'Failed to generate report';
+          toast.error(`Error: ${errorMsg}`, { id: 'weather-report' });
+          console.error('Report generation failed:', result);
+        }
+      }
+    } catch (error) {
+      toast.error(`Failed to generate weather report: ${error.message}`, { id: 'weather-report' });
+      console.error('Report Error:', error);
+    } finally {
+      setQuickActionLoading(null);
+    }
+  };
+
+  const handleRunMLPrediction = async () => {
+    if (!realTimeWeather) {
+      toast.error('Please wait for weather data to load');
+      return;
+    }
+
+    setQuickActionLoading('prediction');
+    toast.loading('Running ML prediction model...', { id: 'ml-prediction' });
+
+    try {
+      const result = await geminiService.generateWeatherPrediction(
+        realTimeWeather.location.name,
+        7
+      );
+
+      if (result.success) {
+        setMlPrediction(result.prediction);
+        toast.success('ML prediction completed!', { id: 'ml-prediction' });
+      } else {
+        // Use fallback prediction if available
+        if (result.fallback) {
+          setMlPrediction(result.fallback);
+          if (result.hasRealData) {
+            toast.success('Forecast data loaded (AI unavailable)', { id: 'ml-prediction', duration: 4000 });
+          } else {
+            toast.success('Prediction guide generated', { id: 'ml-prediction', duration: 4000 });
+          }
+        } else {
+          const errorMsg = result.error || 'Failed to run prediction';
+          toast.error(`Error: ${errorMsg}`, { id: 'ml-prediction' });
+          console.error('Prediction failed:', result);
+        }
+      }
+    } catch (error) {
+      toast.error(`Failed to run ML prediction: ${error.message}`, { id: 'ml-prediction' });
+      console.error('Prediction Error:', error);
+    } finally {
+      setQuickActionLoading(null);
+    }
+  };
+
+  const handleViewAnalytics = () => {
+    // Simply navigate to analytics page - no need for API call
+    toast.success('Navigating to Analytics...', { duration: 1000 });
+    setTimeout(() => {
+      window.location.href = '/analytics';
+    }, 500);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -274,60 +410,51 @@ const Dashboard = () => {
           </p>
         </div>
         <div className="mt-4 flex space-x-2 md:ml-4 md:mt-0">
-          <button className="btn-primary">
+          <button 
+            onClick={() => window.location.reload()}
+            className="btn-primary"
+            title="Reload the page to fetch fresh weather data"
+          >
             <Cloud className="h-4 w-4 mr-2" />
             Refresh Data
           </button>
-          {realTimeWeather && (
-            <div className={`flex items-center text-sm px-3 py-2 rounded-lg ${
-              userLocation && userLocation.city === realTimeWeather.location.name 
-                ? 'text-blue-600 bg-blue-50' 
-                : 'text-orange-600 bg-orange-50'
-            }`}>
-              <Radio className="h-4 w-4 mr-1" />
-              Live Data: {realTimeWeather.location.name}
-              {userLocation && userLocation.city === realTimeWeather.location.name ? (
-                <span className="ml-2 text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
-                  🎯 Your Location
-                </span>
-              ) : (
-                <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">
-                  📍 Default Location
-                </span>
-              )}
-            </div>
-          )}
-          {!userLocation && (
-            <button
-              onClick={handleEnableLocation}
-              disabled={locationLoading}
-              className="flex items-center text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg border border-blue-200 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Click to enable location access and get personalized weather for your area"
-            >
-              {locationLoading ? (
-                <>
-                  <Navigation className="h-4 w-4 mr-2 animate-pulse" />
-                  <span>Getting location...</span>
-                </>
-              ) : (
-                <>
-                  <MapPin className="h-4 w-4 mr-2" />
-                  <span>📍 Enable location for personalized weather</span>
-                </>
-              )}
-            </button>
-          )}
           
-          {userLocation && (
-            <div className="flex items-center text-sm text-green-600 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
-              <Navigation className="h-4 w-4 mr-2" />
-              <span>✅ Location enabled: {userLocation.city}</span>
-            </div>
+          {/* Single unified location display */}
+          {realTimeWeather && userLocation && (
+            <>
+              {userLocation.source === 'gps' ? (
+                <div className="flex items-center text-sm text-green-600 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
+                  <Navigation className="h-4 w-4 mr-2" />
+                  <span>📍 Live: {realTimeWeather.location.name}, {realTimeWeather.location.region}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center text-sm text-orange-600 bg-orange-50 px-3 py-2 rounded-lg border border-orange-200">
+                    <MapPin className="h-4 w-4 mr-2" />
+                    <span>📍 Default: {realTimeWeather.location.name}, {realTimeWeather.location.region}</span>
+                  </div>
+                  <button
+                    onClick={handleEnableLocation}
+                    disabled={locationLoading}
+                    className="flex items-center text-sm text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-lg border border-blue-200 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Click to enable location access and get personalized weather for your area"
+                  >
+                    {locationLoading ? (
+                      <>
+                        <Navigation className="h-4 w-4 mr-2 animate-pulse" />
+                        <span>Getting location...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Radio className="h-4 w-4 mr-2" />
+                        <span>Enable GPS</span>
+                      </>
+                    )}
+                  </button>
+                </>
+              )}
+            </>
           )}
-          <LocationPermission 
-            onLocationUpdate={setUserLocation}
-            showAsCard={false}
-          />
         </div>
       </div>
 
@@ -452,6 +579,36 @@ const Dashboard = () => {
         />
       </div>
 
+      {/* AI Weather Assistant - Disabled due to API key issues */}
+      {realTimeWeather && false && (
+        <AIWeatherAssistant weatherData={realTimeWeather} />
+      )}
+      
+      {/* AI Features Unavailable Notice */}
+      {realTimeWeather && (
+        <div className="card border-2 border-yellow-200 bg-yellow-50">
+          <div className="flex items-start space-x-3">
+            <Info className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <h3 className="text-sm font-medium text-yellow-800 mb-2">
+                AI Features Temporarily Unavailable
+              </h3>
+              <p className="text-sm text-yellow-700 mb-3">
+                The Gemini AI integration is currently unavailable. This affects:
+              </p>
+              <ul className="text-sm text-yellow-700 space-y-1 mb-3 list-disc list-inside">
+                <li>AI Weather Analysis</li>
+                <li>Smart Recommendations</li>
+                <li>AI-Powered Predictions</li>
+              </ul>
+              <p className="text-sm text-yellow-700">
+                <strong>Good news:</strong> All weather data, forecasts, and analytics are still fully functional using real-time data from WeatherAPI.com!
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Charts and Alerts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Weather Chart */}
@@ -487,20 +644,105 @@ const Dashboard = () => {
       <div className="card">
         <h3 className="text-lg font-medium text-gray-900 mb-4">Quick Actions</h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <button className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary-500 hover:bg-primary-50 transition-colors duration-200">
-            <Cloud className="h-6 w-6 text-gray-400 mr-2" />
-            <span className="text-sm font-medium text-gray-700">Generate Weather Report</span>
+          <button 
+            onClick={handleGenerateWeatherReport}
+            disabled={!realTimeWeather || quickActionLoading === 'report'}
+            className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {quickActionLoading === 'report' ? (
+              <>
+                <Cloud className="h-6 w-6 text-blue-500 mr-2 animate-spin" />
+                <span className="text-sm font-medium text-blue-700">Generating...</span>
+              </>
+            ) : (
+              <>
+                <Cloud className="h-6 w-6 text-gray-400 mr-2" />
+                <span className="text-sm font-medium text-gray-700">Generate Weather Report</span>
+              </>
+            )}
           </button>
-          <button className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary-500 hover:bg-primary-50 transition-colors duration-200">
-            <TrendingUp className="h-6 w-6 text-gray-400 mr-2" />
-            <span className="text-sm font-medium text-gray-700">Run ML Prediction</span>
+          <button 
+            onClick={handleRunMLPrediction}
+            disabled={!realTimeWeather || quickActionLoading === 'prediction'}
+            className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-purple-500 hover:bg-purple-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {quickActionLoading === 'prediction' ? (
+              <>
+                <TrendingUp className="h-6 w-6 text-purple-500 mr-2 animate-spin" />
+                <span className="text-sm font-medium text-purple-700">Running...</span>
+              </>
+            ) : (
+              <>
+                <TrendingUp className="h-6 w-6 text-gray-400 mr-2" />
+                <span className="text-sm font-medium text-gray-700">Run ML Prediction</span>
+              </>
+            )}
           </button>
-          <button className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-primary-500 hover:bg-primary-50 transition-colors duration-200">
-            <Eye className="h-6 w-6 text-gray-400 mr-2" />
-            <span className="text-sm font-medium text-gray-700">View Analytics</span>
+          <button 
+            onClick={handleViewAnalytics}
+            disabled={!realTimeWeather || quickActionLoading === 'analytics'}
+            className="flex items-center justify-center p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-500 hover:bg-green-50 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {quickActionLoading === 'analytics' ? (
+              <>
+                <Eye className="h-6 w-6 text-green-500 mr-2 animate-spin" />
+                <span className="text-sm font-medium text-green-700">Loading...</span>
+              </>
+            ) : (
+              <>
+                <Eye className="h-6 w-6 text-gray-400 mr-2" />
+                <span className="text-sm font-medium text-gray-700">View Analytics</span>
+              </>
+            )}
           </button>
         </div>
       </div>
+
+      {/* Weather Report Display */}
+      {weatherReport && (
+        <div className="card border-2 border-blue-200 bg-blue-50">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <Cloud className="h-5 w-5 text-blue-600 mr-2" />
+              Weather Report for {realTimeWeather?.location.name}
+            </h3>
+            <button
+              onClick={() => setWeatherReport(null)}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="bg-white rounded-lg p-4">
+            <div className="text-sm text-gray-700 whitespace-pre-wrap">
+              {weatherReport}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ML Prediction Display */}
+      {mlPrediction && (
+        <div className="card border-2 border-purple-200 bg-purple-50">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <TrendingUp className="h-5 w-5 text-purple-600 mr-2" />
+              7-Day ML Prediction for {realTimeWeather?.location.name}
+            </h3>
+            <button
+              onClick={() => setMlPrediction(null)}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              ✕ Close
+            </button>
+          </div>
+          <div className="bg-white rounded-lg p-4">
+            <div className="text-sm text-gray-700 whitespace-pre-wrap">
+              {mlPrediction}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

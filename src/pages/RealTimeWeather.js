@@ -1,13 +1,45 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MapPin, Search, Globe, Navigation } from 'lucide-react';
+import { toast } from 'react-hot-toast';
 import RealTimeWeather from '../components/RealTimeWeather';
 import LocationPermission from '../components/LocationPermission';
+import { getUserLocation } from '../services/geolocation';
 
 const RealTimeWeatherPage = () => {
-  const [selectedLocation, setSelectedLocation] = useState('San Francisco');
+  const [selectedLocation, setSelectedLocation] = useState(null);
   const [customLocation, setCustomLocation] = useState('');
   const [userLocation, setUserLocation] = useState(null);
   const [isUsingUserLocation, setIsUsingUserLocation] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(true);
+
+  // Automatically get user location on page load
+  useEffect(() => {
+    const initializeLocation = async () => {
+      try {
+        const location = await getUserLocation(true);
+        if (location && location.source !== 'fallback') {
+          setUserLocation(location);
+          // Use coordinates for accurate weather
+          const coords = `${location.coordinates.lat},${location.coordinates.lon}`;
+          setSelectedLocation(coords);
+          setIsUsingUserLocation(true);
+          console.log('✅ Using your live location:', location.city, location.state);
+        } else {
+          // Fallback to Amaravati, Andhra Pradesh
+          setSelectedLocation('16.5062,80.6480');
+          console.log('⚠️ Using fallback: Amaravati, Andhra Pradesh');
+        }
+      } catch (error) {
+        console.error('Location error:', error);
+        setSelectedLocation('16.5062,80.6480');
+        toast.error('Could not get your location. Using Amaravati, Andhra Pradesh');
+      } finally {
+        setLocationLoading(false);
+      }
+    };
+
+    initializeLocation();
+  }, []);
 
   const popularLocations = [
     // Indian Cities (Prioritized)
@@ -55,15 +87,21 @@ const RealTimeWeatherPage = () => {
   const handleUserLocationUpdate = (location) => {
     if (location) {
       setUserLocation(location);
-      setSelectedLocation(location.city);
+      // Use coordinates for accurate weather
+      const coords = `${location.coordinates.lat},${location.coordinates.lon}`;
+      setSelectedLocation(coords);
       setIsUsingUserLocation(true);
+      console.log('✅ Location updated:', location.city, location.state);
     }
   };
 
   const handleUseCurrentLocation = () => {
     if (userLocation) {
-      setSelectedLocation(userLocation.city);
+      // Use coordinates for accurate weather
+      const coords = `${userLocation.coordinates.lat},${userLocation.coordinates.lon}`;
+      setSelectedLocation(coords);
       setIsUsingUserLocation(true);
+      toast.success(`Using your location: ${userLocation.city}`);
     }
   };
 
@@ -76,13 +114,13 @@ const RealTimeWeatherPage = () => {
             Real-Time Weather Data
           </h2>
           <p className="mt-1 text-sm text-gray-500">
-            Live weather conditions powered by Tomorrow.io
+            Live weather conditions powered by WeatherAPI.com
           </p>
         </div>
         <div className="mt-4 flex md:ml-4 md:mt-0">
           <div className="flex items-center text-sm text-gray-500">
             <Globe className="h-4 w-4 mr-1" />
-            API: Tomorrow.io
+            API: WeatherAPI.com
           </div>
         </div>
       </div>
@@ -190,16 +228,24 @@ const RealTimeWeatherPage = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-blue-800">
-                <strong>Currently showing:</strong> {selectedLocation}
-                {isUsingUserLocation && (
+                <strong>Currently showing:</strong> {
+                  locationLoading ? 'Loading your location...' :
+                  isUsingUserLocation && userLocation ? 
+                    `${userLocation.city}${userLocation.state ? ', ' + userLocation.state : ''}${userLocation.country ? ', ' + userLocation.country : ''}` :
+                    selectedLocation
+                }
+                {isUsingUserLocation && !locationLoading && (
                   <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
                     <Navigation className="h-3 w-3 mr-1" />
-                    Your Location
+                    Your Live Location
                   </span>
                 )}
               </p>
               <p className="text-xs text-blue-600 mt-1">
-                You can search by city name, coordinates (lat,lon), postal code, or use your current location
+                {isUsingUserLocation ? 
+                  'Showing weather for your actual location' :
+                  'You can search by city name, coordinates (lat,lon), postal code, or use your current location'
+                }
               </p>
             </div>
           </div>
@@ -218,7 +264,7 @@ const RealTimeWeatherPage = () => {
             <div className="text-sm text-green-800">Data Updates</div>
           </div>
           <div className="text-center p-4 bg-blue-50 rounded-lg">
-            <div className="text-2xl font-bold text-blue-600">Tomorrow.io</div>
+            <div className="text-2xl font-bold text-blue-600">WeatherAPI.com</div>
             <div className="text-sm text-blue-800">Data Source</div>
           </div>
           <div className="text-center p-4 bg-purple-50 rounded-lg">
